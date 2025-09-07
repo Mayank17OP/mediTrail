@@ -372,6 +372,10 @@ def google_login():
     if not google:
         return jsonify({'error': 'Google OAuth not configured'}), 400
     
+    # Get account type from query parameter
+    account_type = request.args.get('account_type', 'patient')
+    session['account_type'] = account_type
+    
     redirect_uri = url_for('google_callback', _external=True)
     return google.authorize_redirect(redirect_uri)
 
@@ -379,40 +383,122 @@ def google_login():
 def google_callback():
     try:
         if not google:
-            return jsonify({'error': 'Google OAuth not configured'}), 400
+            return '''
+            <html>
+            <head>
+                <script>
+                    window.opener.postMessage({
+                        type: 'google_auth_error',
+                        error: 'Google OAuth not configured'
+                    }, window.location.origin);
+                    window.close();
+                </script>
+            </head>
+            <body>
+                <p>Google OAuth not configured. Please contact support.</p>
+                <script>setTimeout(() => window.close(), 2000);</script>
+            </body>
+            </html>
+            ''', 400
             
         token = google.authorize_access_token()
-        user_info = token['userinfo']
+        user_info = token.get('userinfo')
         
+        if not user_info:
+            return '''
+            <html>
+            <head>
+                <script>
+                    window.opener.postMessage({
+                        type: 'google_auth_error',
+                        error: 'Failed to get user information from Google'
+                    }, window.location.origin);
+                    window.close();
+                </script>
+            </head>
+            <body>
+                <p>Failed to get user information from Google.</p>
+                <script>setTimeout(() => window.close(), 2000);</script>
+            </body>
+            </html>
+            ''', 400
+        
+        # Get account type from session (set during login initiation)
+        account_type = session.get('account_type', 'patient')
+        
+        # Look for existing user by Google ID first
         user = User.query.filter_by(google_id=user_info['sub']).first()
         
         if not user:
+            # Look for existing user by email
             user = User.query.filter_by(email=user_info['email']).first()
             if user:
+                # Link Google ID to existing user
                 user.google_id = user_info['sub']
             else:
+                # Create new user
                 user = User(
                     email=user_info['email'],
                     full_name=user_info['name'],
                     google_id=user_info['sub'],
-                    account_type='patient'
+                    account_type=account_type
                 )
                 db.session.add(user)
                 db.session.flush()
                 
-                emergency_profile = EmergencyProfile(user_id=user.id)
-                db.session.add(emergency_profile)
+                # Create emergency profile for patients
+                if account_type == 'patient':
+                    emergency_profile = EmergencyProfile(user_id=user.id)
+                    db.session.add(emergency_profile)
         
         db.session.commit()
         login_user(user)
-        log_user_action(user.id, 'login', 'Successful Google OAuth login')
+        log_user_action(user.id, 'google_login', 'Successful Google OAuth login')
         access_token = create_access_token(identity=user.id)
         
+        # Return success page that communicates with parent window
         dashboard_url = '/dashboard.html' if user.account_type == 'patient' else '/doctorsdashboard.html'
-        return redirect(f'{dashboard_url}?token={access_token}')
+        
+        return f'''
+        <html>
+        <head>
+            <script>
+                // Store user data and token in localStorage
+                localStorage.setItem('medivault_user', JSON.stringify({{
+                    id: {user.id},
+                    email: '{user.email}',
+                    full_name: '{user.full_name}',
+                    account_type: '{user.account_type}'
+                }}));
+                localStorage.setItem('medivault_token', '{access_token}');
+                
+                // Redirect to dashboard
+                window.location.href = '{dashboard_url}';
+            </script>
+        </head>
+        <body>
+            <p>Authentication successful. Redirecting...</p>
+        </body>
+        </html>
+        '''
         
     except Exception as e:
-        return jsonify({'error': f'Google login failed: {str(e)}'}), 500
+        return f'''
+        <html>
+        <head>
+            <script>
+                window.opener.postMessage({{
+                    type: 'google_auth_error',
+                    error: '{str(e)}'
+                }}, window.location.origin);
+                window.close();
+            </script>
+        </head>
+        <body>
+            <p>Authentication failed: {str(e)}</p>
+        </body>
+        </html>
+        ''', 500
 
 @app.route('/api/auth/logout', methods=['POST'])
 @login_required

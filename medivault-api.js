@@ -11,6 +11,8 @@ class MediVaultAPI {
             this.setToken(tokenFromUrl);
             // Clean token from URL
             window.history.replaceState({}, document.title, window.location.pathname);
+            // Refresh user data after getting token
+            this.refreshUserData();
         }
     }
 
@@ -232,6 +234,21 @@ class MediVaultAPI {
     _authHeaders() {
         const token = this.getTokenFromStorage();
         return token ? { 'Authorization': `Bearer ${token}` } : {};
+    }
+
+    // Refresh user data from server
+    async refreshUserData() {
+        try {
+            const response = await fetch(`${this.baseURL}/auth/profile`, {
+                headers: this._authHeaders()
+            });
+            if (response.ok) {
+                const data = await response.json();
+                this.setCurrentUser(data.user);
+            }
+        } catch (error) {
+            console.error('Failed to refresh user data:', error);
+        }
     }
 
     // Utility methods
