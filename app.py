@@ -25,14 +25,22 @@ app = Flask(__name__, static_folder='.', static_url_path='')
 # Configuration
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'medivault-super-secret-key-change-in-production')
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///medivault.db')
-# Render provides DATABASE_URL that may start with postgres://; SQLAlchemy needs postgresql+psycopg://
-if database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql+psycopg://', 1)
-# Enforce SSL for Postgres in production if not specified
-if database_url.startswith('postgresql') and 'sslmode=' not in database_url:
-    sep = '&' if '?' in database_url else '?'
-    database_url = f"{database_url}{sep}sslmode=require"
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+
+# Handle Xano API endpoint - use SQLite for local development
+if database_url.startswith('https://x8ki-letl-twmt.n7.xano.io'):
+    # Use SQLite for local development when Xano URL is provided
+    # In production, you should set up a proper PostgreSQL database
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///medivault.db'
+    print("⚠️  Using SQLite for development. For production, configure a proper PostgreSQL database.")
+else:
+    # Render provides DATABASE_URL that may start with postgres://; SQLAlchemy needs postgresql+psycopg://
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql+psycopg://', 1)
+    # Enforce SSL for Postgres in production if not specified
+    if database_url.startswith('postgresql') and 'sslmode=' not in database_url:
+        sep = '&' if '?' in database_url else '?'
+        database_url = f"{database_url}{sep}sslmode=require"
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -58,13 +66,20 @@ oauth = OAuth(app)
 # Configure Google OAuth
 google = None
 if app.config['GOOGLE_CLIENT_ID'] and app.config['GOOGLE_CLIENT_SECRET']:
-    google = oauth.register(
-        name='google',
-        client_id=app.config['GOOGLE_CLIENT_ID'],
-        client_secret=app.config['GOOGLE_CLIENT_SECRET'],
-        server_metadata_url='https://accounts.google.com/.well-known/openid_configuration',
-        client_kwargs={'scope': 'openid email profile'}
-    )
+    try:
+        google = oauth.register(
+            name='google',
+            client_id=app.config['GOOGLE_CLIENT_ID'],
+            client_secret=app.config['GOOGLE_CLIENT_SECRET'],
+            server_metadata_url='https://accounts.google.com/.well-known/openid_configuration',
+            client_kwargs={'scope': 'openid email profile'}
+        )
+        print("✅ Google OAuth configured successfully")
+    except Exception as e:
+        print(f"❌ Google OAuth configuration failed: {e}")
+        google = None
+else:
+    print("⚠️  Google OAuth not configured - set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET")
 
 # Create uploads directory
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -370,49 +385,183 @@ def login():
 @app.route('/api/auth/google/login')
 def google_login():
     if not google:
-        return jsonify({'error': 'Google OAuth not configured'}), 400
+        return '''
+        <html>
+        <head>
+            <title>Google OAuth Error</title>
+            <style>
+                body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+                .error { color: #d32f2f; background: #ffebee; padding: 20px; border-radius: 8px; margin: 20px; }
+                .info { color: #1976d2; background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 20px; }
+            </style>
+        </head>
+        <body>
+            <h1>Google OAuth Not Configured</h1>
+            <div class="error">
+                <p><strong>Error:</strong> Google OAuth is not properly configured.</p>
+                <p>Please contact the administrator to set up Google OAuth credentials.</p>
+            </div>
+            <div class="info">
+                <p>Required environment variables:</p>
+                <ul style="text-align: left; display: inline-block;">
+                    <li>GOOGLE_CLIENT_ID</li>
+                    <li>GOOGLE_CLIENT_SECRET</li>
+                </ul>
+            </div>
+            <button onclick="window.close()" style="padding: 10px 20px; font-size: 16px; margin-top: 20px;">Close Window</button>
+        </body>
+        </html>
+        ''', 400
     
-    redirect_uri = url_for('google_callback', _external=True)
-    return google.authorize_redirect(redirect_uri)
+    try:
+        # Get account type from query parameter
+        account_type = request.args.get('account_type', 'patient')
+        session['account_type'] = account_type
+        
+        redirect_uri = url_for('google_callback', _external=True)
+        print(f"🔗 Google OAuth redirect URI: {redirect_uri}")
+        return google.authorize_redirect(redirect_uri)
+    except Exception as e:
+        error_html = f'''
+        <html>
+        <head>
+            <title>Google OAuth Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                .error {{ color: #d32f2f; background: #ffebee; padding: 20px; border-radius: 8px; margin: 20px; }}
+            </style>
+        </head>
+        <body>
+            <h1>Google OAuth Error</h1>
+            <div class="error">
+                <p><strong>Error:</strong> {str(e)}</p>
+            </div>
+            <button onclick="window.close()" style="padding: 10px 20px; font-size: 16px; margin-top: 20px;">Close Window</button>
+        </body>
+        </html>
+        '''
+        return error_html, 500
 
 @app.route('/api/auth/google/callback')
 def google_callback():
     try:
         if not google:
-            return jsonify({'error': 'Google OAuth not configured'}), 400
+            return '''
+            <html>
+            <head>
+                <script>
+                    window.opener.postMessage({
+                        type: 'google_auth_error',
+                        error: 'Google OAuth not configured'
+                    }, window.location.origin);
+                    window.close();
+                </script>
+            </head>
+            <body>
+                <p>Google OAuth not configured. Please contact support.</p>
+                <script>setTimeout(() => window.close(), 2000);</script>
+            </body>
+            </html>
+            ''', 400
             
         token = google.authorize_access_token()
-        user_info = token['userinfo']
+        user_info = token.get('userinfo')
         
+        if not user_info:
+            return '''
+            <html>
+            <head>
+                <script>
+                    window.opener.postMessage({
+                        type: 'google_auth_error',
+                        error: 'Failed to get user information from Google'
+                    }, window.location.origin);
+                    window.close();
+                </script>
+            </head>
+            <body>
+                <p>Failed to get user information from Google.</p>
+                <script>setTimeout(() => window.close(), 2000);</script>
+            </body>
+            </html>
+            ''', 400
+        
+        # Get account type from session (set during login initiation)
+        account_type = session.get('account_type', 'patient')
+        
+        # Look for existing user by Google ID first
         user = User.query.filter_by(google_id=user_info['sub']).first()
         
         if not user:
+            # Look for existing user by email
             user = User.query.filter_by(email=user_info['email']).first()
             if user:
+                # Link Google ID to existing user
                 user.google_id = user_info['sub']
             else:
+                # Create new user
                 user = User(
                     email=user_info['email'],
                     full_name=user_info['name'],
                     google_id=user_info['sub'],
-                    account_type='patient'
+                    account_type=account_type
                 )
                 db.session.add(user)
                 db.session.flush()
                 
-                emergency_profile = EmergencyProfile(user_id=user.id)
-                db.session.add(emergency_profile)
+                # Create emergency profile for patients
+                if account_type == 'patient':
+                    emergency_profile = EmergencyProfile(user_id=user.id)
+                    db.session.add(emergency_profile)
         
         db.session.commit()
         login_user(user)
-        log_user_action(user.id, 'login', 'Successful Google OAuth login')
+        log_user_action(user.id, 'google_login', 'Successful Google OAuth login')
         access_token = create_access_token(identity=user.id)
         
+        # Return success page that communicates with parent window
         dashboard_url = '/dashboard.html' if user.account_type == 'patient' else '/doctorsdashboard.html'
-        return redirect(f'{dashboard_url}?token={access_token}')
+        
+        return f'''
+        <html>
+        <head>
+            <script>
+                // Store user data and token in localStorage
+                localStorage.setItem('medivault_user', JSON.stringify({{
+                    id: {user.id},
+                    email: '{user.email}',
+                    full_name: '{user.full_name}',
+                    account_type: '{user.account_type}'
+                }}));
+                localStorage.setItem('medivault_token', '{access_token}');
+                
+                // Redirect to dashboard
+                window.location.href = '{dashboard_url}';
+            </script>
+        </head>
+        <body>
+            <p>Authentication successful. Redirecting...</p>
+        </body>
+        </html>
+        '''
         
     except Exception as e:
-        return jsonify({'error': f'Google login failed: {str(e)}'}), 500
+        return f'''
+        <html>
+        <head>
+            <script>
+                window.opener.postMessage({{
+                    type: 'google_auth_error',
+                    error: '{str(e)}'
+                }}, window.location.origin);
+                window.close();
+            </script>
+        </head>
+        <body>
+            <p>Authentication failed: {str(e)}</p>
+        </body>
+        </html>
+        ''', 500
 
 @app.route('/api/auth/logout', methods=['POST'])
 @login_required
