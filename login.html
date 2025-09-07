@@ -398,7 +398,8 @@
 
         // Google OAuth functionality (full-page redirect)
         document.getElementById('googleSignInBtn').addEventListener('click', function() {
-            window.location.href = '/api/auth/google/login';
+            const accountType = document.querySelector('input[name="accountType"]:checked').value;
+            window.location.href = `/api/auth/google/login?account_type=${accountType}`;
         });
 
         // ECG line animation
