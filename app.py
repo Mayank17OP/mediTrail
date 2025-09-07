@@ -278,7 +278,12 @@ def generate_qr_code(data, size=(200, 200)):
     qr.make(fit=True)
     
     img = qr.make_image(fill_color="black", back_color="white")
-    img = img.resize(size, Image.Resampling.LANCZOS)
+    # Use LANCZOS resampling for better compatibility across Pillow versions
+    try:
+        img = img.resize(size, Image.Resampling.LANCZOS)
+    except AttributeError:
+        # Fallback for older Pillow versions
+        img = img.resize(size, Image.LANCZOS)
     
     buffer = BytesIO()
     img.save(buffer, format='PNG')
@@ -820,11 +825,14 @@ def internal_error(error):
 def root_index():
     return redirect('/index.html')
 
-@app.before_first_request
+# Initialize database on app startup (Flask 3.x compatible)
 def initialize_database():
-    # Ensure tables exist on first request (useful on Render dyno spin-up)
+    """Initialize database tables on app startup"""
     with app.app_context():
         db.create_all()
+
+# Call initialization when the app is created
+initialize_database()
 
 @app.after_request
 def add_security_headers(response):
